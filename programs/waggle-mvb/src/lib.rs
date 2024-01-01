@@ -13,6 +13,7 @@ use anchor_spl::{
     },
     token::{mint_to, Mint, MintTo, Token, TokenAccount},
 };
+pub mod merkle_proof;
 
 declare_id!("B9ytUmZT7f7E6cU2qubkj3xrJnunPnW3ZSEx9pjkHgyF");
 
@@ -30,11 +31,20 @@ pub mod waggle_mvb {
 
     use super::*;
 
-    pub fn create_state(_ctx: Context<CreateState>, _total_supply: u64) -> Result<()> {
+    pub fn create_state(_ctx: Context<CreateState>, _total_supply: u64, _user_max_mint: u64) -> Result<()> {
         let state = &mut _ctx.accounts.state.load_init()?;
 
-        state.authority = *_ctx.accounts.authority.key;
+        state.authority = _ctx.accounts.authority.key();
         state.total_supply = _total_supply;
+        state.user_max_mint = _user_max_mint;
+
+        Ok(())
+    }
+
+    pub fn set_mvb_config(_ctx: Context<SetMvbConfig>, _name: String, _airdrop_root: [u8; 32]) -> Result<()> {
+        let mvb_account = &mut _ctx.accounts.mvb_account.load_mut()?;
+
+        mvb_account.airdrop_root = _airdrop_root;
 
         Ok(())
     }
@@ -47,9 +57,9 @@ pub mod waggle_mvb {
         _total_supply: u64,
     ) -> Result<()> {
         let state = _ctx.accounts.state.load()?;
-        let mvb_mint_account = &mut _ctx.accounts.mvb_mint_account.load_init()?;
-        mvb_mint_account.mint = _ctx.accounts.mint.key();
-        mvb_mint_account.total_supply = _total_supply;
+        let mvb_account = &mut _ctx.accounts.mvb_account.load_init()?;
+        mvb_account.mint = _ctx.accounts.mint.key();
+        mvb_account.total_supply = _total_supply;
 
         // create mint account
         let seeds = &[STATE.as_bytes(), &[_ctx.bumps.state]];
@@ -119,20 +129,47 @@ pub mod waggle_mvb {
         Ok(())
     }
 
+    pub fn mint_nft_airdrop(_ctx: Context<MintNft>, _name: String, _airdrop_amount: u64, _proof: Vec<[u8; 32]>) -> Result<()> {
+        let mvb_account = _ctx.accounts.mvb_account.load()?;
+        let mut mvb_user_account = _ctx.accounts.mvb_user_account.load_mut()?;
+
+        if mvb_user_account.airdrop_num_minted >= _airdrop_amount {
+            return Err(AppErrorCode::ExceededUserAirdrop.into());
+        }
+
+        mvb_user_account.airdrop_num_minted += 1;
+        
+        let node = anchor_lang::solana_program::keccak::hashv(&[
+            &_ctx.accounts.authority.key().to_bytes(),
+            &_airdrop_amount.to_le_bytes(),
+        ]);
+        require!(merkle_proof::verify(_proof, mvb_account.airdrop_root, node.0,), AppErrorCode::InvalidMerkleProof);
+
+        drop(mvb_account);
+        drop(mvb_user_account);
+
+        return mint_nft(_ctx, _name);
+    }
+
     pub fn mint_nft(_ctx: Context<MintNft>, _name: String) -> Result<()> {
         let mvb_edition = &mut _ctx.accounts.mvb_edition.load_init()?;
         let mut state = _ctx.accounts.state.load_mut()?;
-        let mut mvb_account = _ctx.accounts.mvb_mint_account.load_mut()?;
+        let mut mvb_account = _ctx.accounts.mvb_account.load_mut()?;
+        // let mut user_account = _ctx.accounts.user_account.load_mut()?;
 
+        // if user_account.num_minted >= state.user_max_mint {
+        //     return Err(AppErrorCode::ExceededUserMaxMint.into());
+        // }
         if mvb_account.num_minted >= mvb_account.total_supply
             || state.num_minted >= state.total_supply
         {
-            return Err(ErrorCode::ExceededTotalSupply.into());
+            return Err(AppErrorCode::ExceededTotalSupply.into());
         }
 
         mvb_edition.mint = _ctx.accounts.new_mint.key();
-        mvb_edition.mvb = _ctx.accounts.mvb_mint_account.key();
+        mvb_edition.mvb = _ctx.accounts.mvb_account.key();
 
+        // user_account.num_minted += 1;
         state.num_minted += 1;
         mvb_account.num_minted += 1;
 
@@ -291,6 +328,19 @@ pub mod waggle_mvb {
 
         Ok(())
     }
+
+    pub fn init_user(_ctx: Context<InitUser>) -> Result<()> {
+        let mut user_account = _ctx.accounts.user_account.load_init()?;
+        user_account.authority = _ctx.accounts.authority.key();
+        Ok(())
+    }
+
+    pub fn init_mvb_user(_ctx: Context<InitMvbUser>, _name: String) -> Result<()> {
+        let mut mvb_user_account = _ctx.accounts.mvb_user_account.load_init()?;
+        mvb_user_account.authority = _ctx.accounts.authority.key();
+        mvb_user_account.mvb = _ctx.accounts.mvb_account.key();
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -310,6 +360,18 @@ pub struct CreateState<'info> {
 
 #[derive(Accounts)]
 #[instruction(name: String)]
+pub struct SetMvbConfig<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(seeds=[STATE.as_bytes()], bump, has_one = authority)]
+    pub state: AccountLoader<'info, StateAccount>,
+    #[account(mut, seeds = [MVB.as_ref(), name.as_bytes()], bump)]
+    pub mvb_account: AccountLoader<'info, MvbAccount>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(name: String)]
 pub struct MintMasterNft<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -317,12 +379,12 @@ pub struct MintMasterNft<'info> {
     pub state: AccountLoader<'info, StateAccount>,
     #[account(
         init,
-        seeds = [b"mvb".as_ref(), name.as_bytes()],
+        seeds = [MVB.as_ref(), name.as_bytes()],
         bump,
         payer = authority,
-        space = 8 + size_of::<MvbMintAccount>(),
+        space = 8 + size_of::<MvbAccount>(),
     )]
-    pub mvb_mint_account: AccountLoader<'info, MvbMintAccount>,
+    pub mvb_account: AccountLoader<'info, MvbAccount>,
     #[account(
         init,
         seeds = [name.as_bytes()],
@@ -355,14 +417,51 @@ pub struct MintMasterNft<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitUser<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(
+        init, 
+        payer = authority, 
+        seeds = [authority.key().as_ref()], 
+        bump, 
+        space = 8 + size_of::<UserAccount>()
+    )]
+    pub user_account: AccountLoader<'info, UserAccount>,
+
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+#[instruction(name: String)]
+pub struct InitMvbUser<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(seeds = [MVB.as_ref(), name.as_bytes()], bump)]
+    pub mvb_account: AccountLoader<'info, MvbAccount>,
+    #[account(init, payer = authority, seeds = [MVB.as_bytes(), name.as_bytes(), authority.key().as_ref()], bump, space = 8 + size_of::<MvbUserAccount>())]
+    pub mvb_user_account: AccountLoader<'info, MvbUserAccount>,
+
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
 #[instruction(name: String)]
 pub struct MintNft<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
     #[account(mut, seeds=[STATE.as_bytes()], bump)]
     pub state: AccountLoader<'info, StateAccount>,
-    #[account(mut, seeds = [b"mvb".as_ref(), name.as_bytes()],bump)]
-    pub mvb_mint_account: AccountLoader<'info, MvbMintAccount>,
+    #[account(mut, seeds = [MVB.as_ref(), name.as_bytes()],bump)]
+    pub mvb_account: AccountLoader<'info, MvbAccount>,
+    #[account(mut, seeds = [MVB.as_bytes(), name.as_bytes(), authority.key().as_ref()], bump)]
+    pub mvb_user_account: AccountLoader<'info, MvbUserAccount>,
+    #[account(mut, seeds = [authority.key().as_ref()], bump)]
+    pub user_account: AccountLoader<'info, UserAccount>,
+
     #[account(seeds = [name.as_bytes()], bump)]
     pub mint: Box<Account<'info, Mint>>,
     #[account(mut)]
@@ -484,33 +583,58 @@ pub struct CreateCollection<'info> {
 #[account(zero_copy)]
 pub struct StateAccount {
     pub authority: Pubkey,
+    pub lp_mint: Pubkey,
+    pub lp_vault: Pubkey,
+    pub wag_mint: Pubkey,
+    pub usd_mint: Pubkey,
+    pub total_supply: u64,
+    pub num_minted: u64,
+    pub user_max_mint: u64,
+}
+
+#[account(zero_copy)]
+pub struct MvbAccount {
+    pub mint: Pubkey,
+    /// The 256-bit merkle root.
+    pub airdrop_root: [u8; 32],
     pub total_supply: u64,
     pub num_minted: u64,
 }
 
 #[account(zero_copy)]
-pub struct MvbMintAccount {
-    pub mint: Pubkey,
-    pub total_supply: u64,
+pub struct MvbUserAccount {
+    pub authority: Pubkey,
+    pub mvb: Pubkey,
+    pub airdrop_num_minted: u64,
+    pub num_minted: u64,
+}
+
+#[account(zero_copy)]
+pub struct UserAccount {
+    pub authority: Pubkey,
     pub num_minted: u64,
 }
 
 #[account(zero_copy)]
 pub struct MvbEditionAccount {
-    pub mint: Pubkey,             // 32
-    pub metadata: Pubkey,         // 32
-    pub mvb: Pubkey,              // 32
-    pub index: u64,               // 8
-    pub added_to_collection: u64, // 8
+    pub mint: Pubkey,
+    pub metadata: Pubkey,
+    pub mvb: Pubkey,
+    pub index: u64,
+    pub added_to_collection: u64,
     pub data: [Pubkey; 15],
 }
 
 #[error_code]
-pub enum ErrorCode {
+pub enum AppErrorCode {
     #[msg("Exceeded total supply")]
     ExceededTotalSupply,
-    #[msg("Oh No")]
-    OhNo,
+    #[msg("Exceeded user max mint")]
+    ExceededUserMaxMint,
+    #[msg("Exceeded user airdrop")]
+    ExceededUserAirdrop,
+    #[msg("Invalid merkle proof")]
+    InvalidMerkleProof,
 }
 
 pub fn find_edition_account(mint: &Pubkey, edition_number: u64) -> (Pubkey, u8) {

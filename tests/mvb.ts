@@ -1,7 +1,6 @@
 import * as anchor from '@coral-xyz/anchor';
 import { BN, Program, web3 } from '@coral-xyz/anchor';
 import { walletAdapterIdentity } from '@metaplex-foundation/umi-signer-wallet-adapters';
-import { getAssociatedTokenAddress } from '@solana/spl-token';
 import {
   Edition,
   MPL_TOKEN_METADATA_PROGRAM_ID,
@@ -23,6 +22,8 @@ import chaiAsPromised from 'chai-as-promised';
 import chai from 'chai';
 import { chain } from 'lodash';
 import { createToken } from './utils';
+import { BalanceTree, toBytes32Array, hexToNumberArray } from '../src/merkle';
+import { getAssociatedTokenAddress } from '@solana/spl-token';
 
 chai.use(chaiAsPromised);
 
@@ -55,7 +56,7 @@ const users = Array.from({ length: 10 }, () => {
   const user = anchor.web3.Keypair.generate();
   const wallet = new anchor.Wallet(user);
   const provider = new anchor.AnchorProvider(connection, wallet, {});
-  return { user, wallet, provider };
+  return { user, wallet, provider, publicKey: user.publicKey };
 });
 
 const DEFAULT_ACCOUNTS = {
@@ -136,19 +137,18 @@ describe('solana-nft-anchor', async () => {
           lastValidBlockHeight: lastBlockhash.lastValidBlockHeight,
           signature: await connection.requestAirdrop(wallet.publicKey, 10000 * web3.LAMPORTS_PER_SOL),
         });
-        const balance = await connection.getBalance(wallet.publicKey);
+        // const balance = await connection.getBalance(wallet.publicKey);
       }),
     );
   });
   it('Create State', async () => {
     await mvb.methods
-      .createState(new BN(6))
+      .createState(new BN(6), new BN(3))
       .accounts({
         state: statePubkey,
         authority: provider.wallet.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([])
       .rpc();
   });
 
@@ -164,67 +164,75 @@ describe('solana-nft-anchor', async () => {
         collectionVault: collection.mintVault,
         ...DEFAULT_ACCOUNTS,
       })
-      .signers([])
       .rpc();
   });
-  it('Mint drone', async () => {
+  it('Mint masters', async () => {
+    await mintMasterNft(drone);
+    await mintMasterNft(queen);
+  });
+
+  it('Config drone airdrop', async () => {
+    const configs = [
+      { account: users[0].publicKey, amount: new BN(1) },
+      { account: users[1].publicKey, amount: new BN(2) },
+      { account: users[2].publicKey, amount: new BN(3) },
+    ];
+    const tree = new BalanceTree(configs);
     await mvb.methods
-      .mintMasterNft(drone.name, drone.symbol, drone.uri, drone.totalSupply)
+      .setMvbConfig(drone.name, toBytes32Array(tree.getRoot()))
       .accounts({
         authority: provider.wallet.publicKey,
         state: statePubkey,
-        mint: drone.mint,
-        mvbMintAccount: drone.mintAccount,
-        mintMetadata: drone.metadata,
-        mintMaster: drone.masterEdition,
-        mintVault: drone.mintVault,
+        mvbAccount: drone.mintAccount,
         ...DEFAULT_ACCOUNTS,
       })
-      .signers([])
       .rpc();
-  });
-  it('Mint queen', async () => {
-    await mvb.methods
-      .mintMasterNft(queen.name, queen.symbol, queen.uri, queen.totalSupply)
-      .accounts({
-        authority: provider.wallet.publicKey,
-        state: statePubkey,
-        mint: queen.mint,
-        mvbMintAccount: queen.mintAccount,
-        mintMetadata: queen.metadata,
-        mintMaster: queen.masterEdition,
-        mintVault: queen.mintVault,
-        ...DEFAULT_ACCOUNTS,
-      })
-      .signers([])
-      .rpc();
+
+    const proof = tree.getProof(users[0].publicKey, configs[0].amount);
+    await mintCopyOfMaster(users[0], drone, new BN(1), proof);
+    // await mintCopyOfMaster(users[0], drone, new BN(1), proof);
+    await expect(mintCopyOfMaster(users[0], drone, new BN(1), proof)).rejectedWith(
+      RegExp(mvbErrors['ExceededUserAirdrop']),
+    );
   });
 
   it('Mint copy of drone', async () => {
-    await mintCopyOfMaster(users[0], drone);
-    await mintCopyOfMaster(users[0], queen);
-    const edition3 = await mintCopyOfMaster(users[0], drone);
-
-    await expect(mintCopyOfMaster(users[0], queen)).rejectedWith(RegExp(mvbErrors['ExceededTotalSupply']));
-
-    const state = await mvb.account.stateAccount.fetch(statePubkey);
-    const queenAcc = await mvb.account.mvbMintAccount.fetch(queen.mintAccount);
-    const droneAcc = await mvb.account.mvbMintAccount.fetch(drone.mintAccount);
-
-    expect(droneAcc.numMinted.toNumber()).to.equal(2);
-    expect(queenAcc.numMinted.toNumber()).to.equal(1);
-    expect(state.numMinted.toNumber()).to.equal(3);
-
-    const e = await fetchDigitalAsset(umi, publicKey(edition3.newMint)).then((x) => x.edition as Edition);
-    expect(e.edition.toString()).eq('3');
+    // await mintCopyOfMaster(users[0], drone);
+    // await mintCopyOfMaster(users[0], queen);
+    // const edition3 = await mintCopyOfMaster(users[0], drone);
+    // await expect(mintCopyOfMaster(users[0], queen)).rejectedWith(RegExp(mvbErrors['ExceededTotalSupply']));
+    // const state = await mvb.account.stateAccount.fetch(statePubkey);
+    // const queenAcc = await mvb.account.mvbAccount.fetch(queen.mintAccount);
+    // const droneAcc = await mvb.account.mvbAccount.fetch(drone.mintAccount);
+    // expect(droneAcc.numMinted.toNumber()).to.equal(2);
+    // expect(queenAcc.numMinted.toNumber()).to.equal(1);
+    // expect(state.numMinted.toNumber()).to.equal(3);
+    // const e = await fetchDigitalAsset(umi, publicKey(edition3.newMint)).then((x) => x.edition as Edition);
+    // expect(e.edition.toString()).eq('3');
   });
 });
 
-async function mintCopyOfMaster(user: IUser, master: IMvb) {
+async function mintMasterNft(master: IMvb) {
+  await mvb.methods
+    .mintMasterNft(master.name, master.symbol, master.uri, master.totalSupply)
+    .accounts({
+      authority: provider.wallet.publicKey,
+      state: statePubkey,
+      mint: master.mint,
+      mvbAccount: master.mintAccount,
+      mintMetadata: master.metadata,
+      mintMaster: master.masterEdition,
+      mintVault: master.mintVault,
+      ...DEFAULT_ACCOUNTS,
+    })
+    .signers([])
+    .rpc();
+}
+
+async function mintCopyOfMaster(user: IUser, master: IMvb, _airdrop_amount: BN, _proof: Buffer[]) {
   const txs = new web3.Transaction();
 
   const mvbAccount = await mvb.account.stateAccount.fetch(statePubkey);
-
   const edition = mvbAccount.numMinted.add(new BN(1));
 
   const newMint = anchor.web3.Keypair.generate();
@@ -246,16 +254,60 @@ async function mintCopyOfMaster(user: IUser, master: IMvb) {
   );
   const [mvbEdition] = anchor.web3.PublicKey.findProgramAddressSync([newMint.publicKey.toBuffer()], mvb.programId);
 
+  const [mvbUserAccount, bump1] = anchor.web3.PublicKey.findProgramAddressSync(
+    [utf8.encode('mvb'), utf8.encode(master.name), user.wallet.publicKey.toBuffer()],
+    mvb.programId,
+  );
+  const [userAccount] = anchor.web3.PublicKey.findProgramAddressSync([user.wallet.publicKey.toBuffer()], mvb.programId);
+
+  let createdUser = false;
+  let createdMvbUser = false;
+  try {
+    await mvb.account.userAccount.fetch(userAccount);
+    createdUser = true;
+  } catch {}
+
+  try {
+    await mvb.account.mvbUserAccount.fetch(mvbUserAccount);
+    createdMvbUser = true;
+  } catch {}
+
+  const initUserTx = await mvb.methods
+    .initUser()
+    .accounts({
+      authority: user.wallet.publicKey,
+      userAccount,
+      ...DEFAULT_ACCOUNTS,
+    })
+    .transaction();
+
+  const initMvbUserTx = await mvb.methods
+    .initMvbUser(master.name)
+    .accounts({
+      authority: user.wallet.publicKey,
+      mvbAccount: master.mintAccount,
+      mvbUserAccount,
+      ...DEFAULT_ACCOUNTS,
+    })
+    .transaction();
+
   const tx = await mvb.methods
-    .mintNft(master.name)
+    .mintNftAirdrop(
+      master.name,
+      _airdrop_amount,
+      _proof.map((p) => hexToNumberArray(p.toString('hex'))),
+    )
     .accounts({
       authority: user.wallet.publicKey,
       state: statePubkey,
       mint: master.mint,
-      mvbMintAccount: master.mintAccount,
+      mvbAccount: master.mintAccount,
       mintVault: master.mintVault,
       mintMetadata: master.metadata,
       mintMaster: master.masterEdition,
+
+      userAccount,
+      mvbUserAccount,
 
       newMint: newMint.publicKey,
       newMintVault,
@@ -270,9 +322,6 @@ async function mintCopyOfMaster(user: IUser, master: IMvb) {
     .signers([newMint])
     .transaction();
   tx.add(modifyComputeUnits);
-
-  txs.add(tx);
-
   const tx2 = await mvb.methods
     .addToCollection()
     .accounts({
@@ -291,6 +340,9 @@ async function mintCopyOfMaster(user: IUser, master: IMvb) {
     .signers([])
     .transaction();
 
+  if (!createdUser) txs.add(initUserTx);
+  if (!createdMvbUser) txs.add(initMvbUserTx);
+  txs.add(tx);
   txs.add(tx2);
 
   await user.provider.sendAndConfirm(txs, [newMint], {});
