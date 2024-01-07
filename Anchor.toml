@@ -5,7 +5,7 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-waggle-mvb = "B9ytUmZT7f7E6cU2qubkj3xrJnunPnW3ZSEx9pjkHgyF"
+waggle-mvb = "6a2VeLtBtKAYu5ftup9o9uLEvfySdEzBhSDukHFZaopu"
 
 [registry]
 url = "https://api.apr.dev"

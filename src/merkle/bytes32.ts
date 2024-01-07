@@ -1,7 +1,9 @@
-import invariant from 'tiny-invariant';
-
 export const toBytes32Array = (b: Buffer): number[] => {
-  invariant(b.length <= 32, `invalid length ${b.length}`);
+  // invariant(b.length <= 32, `invalid length ${b.length}`);
+  if (b.length > 32) {
+    throw new Error(`invalid length ${b.length}`);
+  }
+
   const buf = Buffer.alloc(32);
   b.copy(buf, 32 - b.length);
 
@@ -10,7 +12,9 @@ export const toBytes32Array = (b: Buffer): number[] => {
 
 export const hexToNumberArray = (hex: string): number[] => {
   const b = Buffer.from(hex, 'hex');
-  invariant(b.length <= 32, `invalid length ${b.length}`);
+  if (b.length > 32) {
+    throw new Error(`invalid length ${b.length}`);
+  }
 
   const buf = Buffer.alloc(32);
   b.copy(buf, 32 - b.length);

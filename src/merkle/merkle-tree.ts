@@ -1,12 +1,11 @@
-import { keccak_256 } from "js-sha3";
-import invariant from "tiny-invariant";
+import { keccak_256 } from 'js-sha3';
 
 function getPairElement(idx: number, layer: Buffer[]): Buffer | null {
   const pairIdx = idx % 2 === 0 ? idx + 1 : idx - 1;
 
   if (pairIdx < layer.length) {
     const pairEl = layer[pairIdx];
-    invariant(pairEl, "pairEl");
+    if (!pairEl) throw new Error('getPairElement: pairEl is null');
     return pairEl;
   } else {
     return null;
@@ -21,10 +20,10 @@ function bufDedup(elements: Buffer[]): Buffer[] {
 
 function bufArrToHexArr(arr: Buffer[]): string[] {
   if (arr.some((el) => !Buffer.isBuffer(el))) {
-    throw new Error("Array is not an array of buffers");
+    throw new Error('Array is not an array of buffers');
   }
 
-  return arr.map((el) => "0x" + el.toString("hex"));
+  return arr.map((el) => '0x' + el.toString('hex'));
 }
 
 function sortAndConcat(...args: Buffer[]): Buffer {
@@ -48,7 +47,7 @@ export class MerkleTree {
     this._bufferElementPositionIndex = this._elements.reduce<{
       [hexElement: string]: number;
     }>((memo, el, index) => {
-      memo[el.toString("hex")] = index;
+      memo[el.toString('hex')] = index;
       return memo;
     }, {});
 
@@ -58,7 +57,7 @@ export class MerkleTree {
 
   getLayers(elements: Buffer[]): Buffer[][] {
     if (elements.length === 0) {
-      throw new Error("empty tree");
+      throw new Error('empty tree');
     }
 
     const layers = [];
@@ -67,7 +66,8 @@ export class MerkleTree {
     // Get next layer until we reach the root
     while ((layers[layers.length - 1]?.length ?? 0) > 1) {
       const nextLayerIndex: Buffer[] | undefined = layers[layers.length - 1];
-      invariant(nextLayerIndex, "nextLayerIndex");
+      // invariant(nextLayerIndex, 'nextLayerIndex');
+      if (!nextLayerIndex) throw new Error('nextLayerIndex');
       layers.push(this.getNextLayer(nextLayerIndex));
     }
 
@@ -88,11 +88,13 @@ export class MerkleTree {
 
   static combinedHash(first: Buffer, second: Buffer | undefined): Buffer {
     if (!first) {
-      invariant(second, "second element of pair must exist");
+      // invariant(second, 'second element of pair must exist');
+      if (!second) throw new Error('second element of pair must exist');
       return second;
     }
     if (!second) {
-      invariant(first, "first element of pair must exist");
+      // invariant(first, 'first element of pair must exist');
+      if (!first) throw new Error('first element of pair must exist');
       return first;
     }
 
@@ -101,19 +103,20 @@ export class MerkleTree {
 
   getRoot(): Buffer {
     const root = this._layers[this._layers.length - 1]?.[0];
-    invariant(root, "root");
+    // invariant(root, 'root');
+    if (!root) throw new Error('root');
     return root;
   }
 
   getHexRoot(): string {
-    return this.getRoot().toString("hex");
+    return this.getRoot().toString('hex');
   }
 
   getProof(el: Buffer): Buffer[] {
-    const initialIdx = this._bufferElementPositionIndex[el.toString("hex")];
+    const initialIdx = this._bufferElementPositionIndex[el.toString('hex')];
 
-    if (typeof initialIdx !== "number") {
-      throw new Error("Element does not exist in Merkle tree");
+    if (typeof initialIdx !== 'number') {
+      throw new Error('Element does not exist in Merkle tree');
     }
 
     let idx = initialIdx;

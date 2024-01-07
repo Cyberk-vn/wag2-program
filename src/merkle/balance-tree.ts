@@ -1,4 +1,3 @@
-import { u64 } from '@saberhq/token-utils';
 import type { PublicKey } from '@solana/web3.js';
 import type BN from 'bn.js';
 import { keccak_256 } from 'js-sha3';
@@ -26,7 +25,7 @@ export class BalanceTree {
 
   // keccak256(abi.encode(account, amount))
   static toNode(account: PublicKey, amount: BN): Buffer {
-    const buf = Buffer.concat([account.toBuffer(), new u64(amount).toArrayLike(Buffer, 'le', 8)]);
+    const buf = Buffer.concat([account.toBuffer(), amount.toArrayLike(Buffer, 'le', 8)]);
     return Buffer.from(keccak_256(buf), 'hex');
   }
 
