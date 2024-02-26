@@ -3,7 +3,7 @@ import { CONFIG, DEFAULT_ACCOUNTS, FIXED_CONFIG, IMasterNft, getNftInfo, program
 import { web3 } from '@coral-xyz/anchor'
 
 async function main() {
-  const collection = await getNftInfo(CONFIG.COLLECTION)
+  const collection = await getNftInfo(CONFIG.COLLECTION as any)
   const tx = await program.methods
     .createCollection(collection.name, collection.symbol, collection.uri)
     .accounts({

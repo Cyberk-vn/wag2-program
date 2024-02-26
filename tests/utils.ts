@@ -2,7 +2,6 @@ import { AnchorProvider, BN, web3 } from '@coral-xyz/anchor'
 import {
   getAssociatedTokenAddress,
   createMint,
-  TOKEN_2022_PROGRAM_ID,
   getMint,
   mintTo,
   createAssociatedTokenAccount,
@@ -74,7 +73,7 @@ export async function transferTo(
   // await mintTo(provider.connection, payer, mint, associatedTokenAddress, fromWallet, amount)
 }
 
-export function toBN(val: any, decimals: number) {
+export function toBN(val: any, decimals: number = 9) {
   const decimalAmount = parseUnits(val.toString(), decimals)
   return new BN(decimalAmount.toString())
 }

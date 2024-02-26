@@ -22,6 +22,7 @@ use anchor_spl::{
   },
   token::{ mint_to, Mint, MintTo, Token, TokenAccount, Transfer, transfer, approve, revoke },
 };
+use anchor_spl::metadata::{sign_metadata, SignMetadata};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use arrayref::array_ref;
@@ -29,7 +30,7 @@ use std::mem::size_of;
 
 pub mod merkle_proof;
 
-declare_id!("6a2VeLtBtKAYu5ftup9o9uLEvfySdEzBhSDukHFZaopu");
+declare_id!("DaeRkRvTZrFjQPKF6XdGok5XbhFBUSHukqQUvhygQ9pm");
 
 pub const MPL_PREFIX: &str = "metadata";
 pub const MPL_EDITION: &str = "edition";
@@ -38,16 +39,26 @@ pub const MVB: &str = "mvb";
 pub const MINT: &str = "mint";
 pub const LOCK: &str = "lock";
 pub const COLLECTION: &str = "WMC";
+pub const REFERRAL: &str = "referral";
+pub const FULL_100: u64 = 100;
+pub const INFINITE_INVITES: u64 = 1000000;
 
 #[program]
 pub mod waggle_mvb {
-  use anchor_spl::metadata::{sign_metadata, SignMetadata};
+
+// use anchor_lang::solana_program::log;
 
 use super::*;
 
   pub fn init_user(_ctx: Context<InitUser>) -> Result<()> {
     let mut user_account = _ctx.accounts.user_account.load_init()?;
     user_account.authority = _ctx.accounts.authority.key();
+
+    emit!(UserInited {
+      authority: _ctx.accounts.authority.key(),
+      pubkey: _ctx.accounts.user_account.key(),
+    });
+
     Ok(())
   }
 
@@ -55,20 +66,37 @@ use super::*;
     let mut mvb_user_account = _ctx.accounts.mvb_user_account.load_init()?;
     mvb_user_account.authority = _ctx.accounts.authority.key();
     mvb_user_account.mvb = _ctx.accounts.mvb_account.key();
+
+    emit!(MvbUserInited {
+      authority: _ctx.accounts.authority.key(),
+      pubkey: _ctx.accounts.mvb_user_account.key(),
+      mvb: _ctx.accounts.mvb_account.key(),
+    });
+
     Ok(())
   }
 
   pub fn create_state(
     _ctx: Context<CreateState>,
+    _referral_level_values: [u64; 4],
+    _referral_level_max_invites: [u64; 4],
     _total_supply: u64,
     _user_max_mint: u64,
     _lock_duration: i64,
     _honey_drop_cycle: i64,
+    _stake_lp_end_time: i64,
+    _mint_start_time: i64,
     _mint_end_time: i64,
+    _drop_harvest_start_time: i64,
     _drop_harvest_end_time: i64,
-    _honey_drops: [u64; 4]
+    _honey_drops: [u64; 4],
+    _parent_1_percent: u64,
+    _parent_2_percent: u64,
   ) -> Result<()> {
     let state = &mut _ctx.accounts.state.load_init()?;
+
+    state.referral_level_values = _referral_level_values;
+    state.referral_level_max_invites = _referral_level_max_invites;
 
     state.authority = _ctx.accounts.authority.key();
     state.total_supply = _total_supply;
@@ -81,9 +109,28 @@ use super::*;
     state.lp_wag_vault = _ctx.accounts.lp_wag_vault.key();
     state.lock_duration = _lock_duration;
     state.honey_drop_cycle = _honey_drop_cycle;
+    
+    state.stake_lp_end_time = _stake_lp_end_time;
+    state.mint_start_time = _mint_start_time;
     state.mint_end_time = _mint_end_time;
+    state.harvest_drop_start_time = _drop_harvest_start_time;
+    state.harvest_drop_end_time = _drop_harvest_end_time;
+
     state.honey_drop_remains = _honey_drops;
     state.service = _ctx.accounts.service.key();
+
+    state.referral_parent_1_percent = _parent_1_percent;
+    state.referral_parent_2_percent = _parent_2_percent;
+
+    require_gte!(FULL_100, state.referral_parent_1_percent, AppErrorCode::InvalidReferral);
+    require_gte!(FULL_100, state.referral_parent_2_percent, AppErrorCode::InvalidReferral);
+
+    Ok(())
+  }
+
+  pub fn set_referral_root(_ctx: Context<SetState>, _referral_root: [u8; 32]) -> Result<()> {
+    let state = &mut _ctx.accounts.state.load_mut()?;
+    state.referral_root = _referral_root;
 
     Ok(())
   }
@@ -94,9 +141,15 @@ use super::*;
     _user_max_mint: Option<u64>,
     _lock_duration: Option<i64>,
     _honey_drop_cycle: Option<i64>,
+    _stake_lp_end_time: Option<i64>,
+    _mint_start_time: Option<i64>,
     _mint_end_time: Option<i64>,
+    _drop_harvest_start_time: Option<i64>,
     _drop_harvest_end_time: Option<i64>,
-    _honey_drops: Option<[u64; 4]>
+    _parent_1_percent: Option<u64>,
+    _parent_2_percent: Option<u64>,
+    _referral_level_values: Option<[u64; 4]>,
+    _referral_level_max_invites: Option<[u64; 4]>,
   ) -> Result<()> {
     let state = &mut _ctx.accounts.state.load_mut()?;
 
@@ -112,17 +165,112 @@ use super::*;
     if _honey_drop_cycle.is_some() {
       state.honey_drop_cycle = _honey_drop_cycle.unwrap();
     }
+    if _stake_lp_end_time.is_some() {
+      state.stake_lp_end_time = _stake_lp_end_time.unwrap();
+    }
+    if _mint_start_time.is_some() {
+      state.mint_start_time = _mint_start_time.unwrap();
+    }
     if _mint_end_time.is_some() {
       state.mint_end_time = _mint_end_time.unwrap();
+    }
+    if _drop_harvest_start_time.is_some() {
+      state.harvest_drop_start_time = _drop_harvest_start_time.unwrap();
     }
     if _drop_harvest_end_time.is_some() {
       state.harvest_drop_end_time = _drop_harvest_end_time.unwrap();
     }
-    if _honey_drops.is_some() {
-      state.honey_drop_remains = _honey_drops.unwrap();
+    if _parent_1_percent.is_some() {
+      state.referral_parent_1_percent = _parent_1_percent.unwrap();
     }
+    if _parent_2_percent.is_some() {
+      state.referral_parent_2_percent = _parent_2_percent.unwrap();
+    }
+    if _referral_level_values.is_some() {
+      state.referral_level_values = _referral_level_values.unwrap();
+    }
+    if _referral_level_max_invites.is_some() {
+      state.referral_level_max_invites = _referral_level_max_invites.unwrap();
+    }
+    // if _honey_drops.is_some() {
+    //   state.honey_drop_remains = _honey_drops.unwrap();
+    // }
+    require_gte!(FULL_100, state.referral_parent_1_percent, AppErrorCode::InvalidReferral);
+    require_gte!(FULL_100, state.referral_parent_2_percent, AppErrorCode::InvalidReferral);
 
     Ok(())
+  }
+
+  pub fn apply_cycle0_referral(_ctx: Context<ApplyCycle0Referral>, _proof: Vec<[u8; 32]>) -> Result<()> {
+    let mut user_account = _ctx.accounts.user_account.load_mut()?;
+    let state = _ctx.accounts.state.load()?;
+
+    require_eq!(user_account.invited, 0, AppErrorCode::UserInvited);
+    require!(merkle_proof::verify(_proof, state.referral_root, _ctx.accounts.authority.key().to_bytes()), AppErrorCode::InvalidMerkleProof);
+
+    user_account.invited = 1;
+
+    emit!(ReferralApplied {
+      referrer: Pubkey::default(),
+      referee: _ctx.accounts.authority.key(),
+      code: String::default(),
+    });
+
+    Ok(())
+  }
+
+  pub fn apply_referral(_ctx: Context<ApplyReferral>, _code: String) -> Result<()> {
+    let mut user_account = _ctx.accounts.user_account.load_mut()?;
+    let mut referral_account = _ctx.accounts.referral_account.load_mut()?;
+
+    require_eq!(user_account.invited, 0, AppErrorCode::UserInvited);
+    require_gt!(referral_account.max, referral_account.used, AppErrorCode::ReferralCodeUsed);
+
+    referral_account.used = referral_account.used + 1;
+    user_account.invited = 1;
+    user_account.referrer = referral_account.owner;
+    user_account.referral = _ctx.accounts.referral_account.key();
+
+    emit!(ReferralApplied {
+      referrer: referral_account.owner,
+      referee: _ctx.accounts.authority.key(),
+      code: _code,
+    });
+
+    Ok(())
+  }
+
+  pub fn create_referral_admin(_ctx: Context<InitReferral>, _code: String) -> Result<()> {
+    let state = _ctx.accounts.state.load()?;
+
+    require!(state.authority == _ctx.accounts.authority.key() || state.service == _ctx.accounts.authority.key(), AppErrorCode::InvalidAuthority);
+
+    drop(state);
+
+    create_referral_account(_ctx, _code, 1)
+  }
+
+  pub fn create_referral(_ctx: Context<InitReferral>, _code: String) -> Result<()> {
+    let state = _ctx.accounts.state.load()?;
+    let user_account = _ctx.accounts.user_account.load()?;
+
+    let mut max = 0;
+    let mut i = state.referral_level_values.len();
+    let total = user_account.lp_staked_value + user_account.team_staked_value;
+    while i > 0 {
+      i -= 1;
+      if total >= state.referral_level_values[i] {
+        max = state.referral_level_max_invites[i];
+        break;
+      }
+    }
+
+    require_gt!(max,  user_account.num_referral_created, AppErrorCode::InsufficientReferral);
+
+    drop(state);
+    drop(user_account);
+
+    create_referral_account(_ctx, _code, max)
   }
 
   pub fn mint_master_nft(
@@ -133,7 +281,6 @@ use super::*;
     _total_supply: u64,
     _lp_value_price: u64
   ) -> Result<()> {
-    let state = _ctx.accounts.state.load()?;
     let mvb_account = &mut _ctx.accounts.mvb_account.load_init()?;
 
     mvb_account.mint = _ctx.accounts.mint.key();
@@ -250,7 +397,7 @@ use super::*;
     _proof: Vec<[u8; 32]>
   ) -> Result<()> {
     let mvb_account = _ctx.accounts.mvb_account.load()?;
-    let mut mvb_user_account = _ctx.accounts.mvb_user_account.as_mut().unwrap().load_mut()?;
+    let mut mvb_user_account = _ctx.accounts.mvb_user_account.load_mut()?;
 
     if mvb_user_account.airdrop_num_minted >= _airdrop_amount {
       return Err(AppErrorCode::ExceededUserAirdrop.into());
@@ -274,15 +421,18 @@ use super::*;
     let state = _ctx.accounts.state.load()?;
     let mvb_account = _ctx.accounts.mvb_account.load()?;
 
+    let total_value = user_account.lp_staked_value + user_account.team_staked_bonus_value;
+    let remain = total_value - user_account.used_lp_staked_value;
+
     if user_account.num_minted >= state.user_max_mint {
       return Err(AppErrorCode::ExceededUserMaxMint.into());
     }
-    if user_account.lp_staked_value < mvb_account.lp_value_price {
+    if remain < mvb_account.lp_value_price {
       return Err(AppErrorCode::Insufficient.into());
     }
 
     user_account.num_minted += 1;
-    user_account.lp_staked_value -= mvb_account.lp_value_price;
+    user_account.used_lp_staked_value += mvb_account.lp_value_price;
 
     drop(user_account);
     drop(state);
@@ -391,6 +541,14 @@ use super::*;
 
   pub fn stake_lp(_ctx: Context<StakeLp>, _amount: u64) -> Result<()> {
     let mut user_account = _ctx.accounts.user_account.load_mut()?;
+    let mut user_staked_account = _ctx.accounts.user_staked_account.load_init()?;
+    let state = _ctx.accounts.state.load()?;
+
+    require_eq!(user_account.invited, 1, AppErrorCode::UserNotInvited);
+
+    if _ctx.accounts.clock.unix_timestamp > state.stake_lp_end_time {
+      return Err(AppErrorCode::InvalidTime.into());
+    }
 
     let lp_supply = _ctx.accounts.lp_mint.supply;
     let lp_value = _ctx.accounts.lp_usd_vault.amount * 2;
@@ -408,6 +566,11 @@ use super::*;
     user_account.lp_staked_value += value;
     user_account.lp_staked_time = _ctx.accounts.clock.unix_timestamp;
 
+    user_staked_account.authority = _ctx.accounts.authority.key();
+    user_staked_account.amount = _amount;
+    user_staked_account.value = value;
+    user_staked_account.time = _ctx.accounts.clock.unix_timestamp;
+
     let cpi_ctx = CpiContext::new(_ctx.accounts.token_program.to_account_info(), Transfer {
       from: _ctx.accounts.user_lp_vault.to_account_info(),
       to: _ctx.accounts.lp_vault.to_account_info(),
@@ -415,10 +578,46 @@ use super::*;
     });
     transfer(cpi_ctx, _amount)?;
 
+    let mut stake_event = Staked {
+      authority: _ctx.accounts.authority.key(),
+      amount: _amount,
+      value: value,
+      parent_1: user_account.referrer,
+      parent_2: Pubkey::default(),
+      amount_1: 0,
+      value_1: 0,
+      amount_2: 0,
+      value_2: 0,
+    };
+
+    if user_account.referrer != Pubkey::default() {
+      let mut user_account_parent_1 = _ctx.accounts.user_account_parent_1.as_mut().unwrap().load_mut()?;
+      stake_event.amount_1 = _amount * state.referral_parent_1_percent / FULL_100;
+      stake_event.value_1 = value * state.referral_parent_1_percent / FULL_100;
+
+      user_account_parent_1.team_staked_bonus_amount += stake_event.amount_1;
+      user_account_parent_1.team_staked_bonus_value += stake_event.value_1;
+
+      user_account_parent_1.team_staked_amount += _amount;
+      user_account_parent_1.team_staked_value += value;
+
+      if user_account_parent_1.referrer != Pubkey::default() {
+        stake_event.parent_2 = user_account_parent_1.referrer;
+        let mut user_account_parent_2 = _ctx.accounts.user_account_parent_2.as_mut().unwrap().load_mut()?;
+        stake_event.amount_2 = _amount * state.referral_parent_2_percent / FULL_100;
+        stake_event.value_2 = value * state.referral_parent_2_percent / FULL_100;
+
+        user_account_parent_2.team_staked_bonus_amount += stake_event.amount_2;
+        user_account_parent_2.team_staked_bonus_value += stake_event.value_2;
+      }
+    }
+
+    emit!(stake_event);
+
     Ok(())
   }
 
-  pub fn unstake_lp(_ctx: Context<StakeLp>) -> Result<()> {
+  pub fn unstake_lp(_ctx: Context<UnstakeLp>) -> Result<()> {
     let mut user_account = _ctx.accounts.user_account.load_mut()?;
     let state = _ctx.accounts.state.load()?;
 
@@ -443,10 +642,25 @@ use super::*;
     );
     transfer(cpi_ctx, amount)?;
 
+    emit!(Unstaked {
+      authority: _ctx.accounts.authority.key(),
+      amount: amount,
+    });
+
     Ok(())
   }
 
   pub fn lock_nft(_ctx: Context<LockNft>, _symbol: String) -> Result<()> {
+    let state = _ctx.accounts.state.load()?;
+    // anchor_lang::solana_program::log::sol_log(&format!(
+    //   "lock_nft: {} {} {}",
+    //   _ctx.accounts.clock.unix_timestamp, state.harvest_drop_start_time, state.harvest_drop_end_time
+    // ));
+    if state.harvest_drop_start_time > _ctx.accounts.clock.unix_timestamp || _ctx.accounts.clock.unix_timestamp > state.harvest_drop_end_time {
+      return Err(AppErrorCode::InvalidTime.into());
+    }
+    drop(state);
+
     let mut lock_account = match _ctx.accounts.lock_account.load_mut() {
       Ok(r) => r,
       Err(_err) => _ctx.accounts.lock_account.load_init()?,
@@ -491,14 +705,25 @@ use super::*;
     );
     freeze_delegated_account(cpi_ctx)?;
 
+    emit!(NftLocked {
+      pubkey: _ctx.accounts.lock_account.key(),
+      authority: _ctx.accounts.authority.key(),
+      parent: _ctx.accounts.parent_mint.key(),
+      mint: _ctx.accounts.mint.key(),
+      edition: edition.edition,
+    });
+
     Ok(())
   }
 
   pub fn unlock_nft(_ctx: Context<LockNft>, _symbol: String) -> Result<()> {
     let mut lock_account = _ctx.accounts.lock_account.load_mut()?;
+    let state = _ctx.accounts.state.load()?;
 
-    lock_account.calculate_lock_duration(&_ctx.accounts.clock);
+    lock_account.calculate_lock_duration(&_ctx.accounts.clock, &state);
     lock_account.locking = 0;
+
+    drop(state);
 
     let seeds = &[STATE.as_bytes(), &[_ctx.bumps.state]];
     let signer = &[&seeds[..]];
@@ -524,16 +749,27 @@ use super::*;
       })
     )?;
 
+    emit!(NftUnlocked {
+      pubkey: _ctx.accounts.lock_account.key(),
+      authority: _ctx.accounts.authority.key(),
+      parent: _ctx.accounts.parent_mint.key(),
+      mint: _ctx.accounts.mint.key(),
+      edition: lock_account.edition,
+    });
+
     Ok(())
   }
 
   pub fn harvest(_ctx: Context<Harvest>, _symbol: String) -> Result<()> {
     let mvb_account = _ctx.accounts.mvb_account.load()?;
     let mut lock_account = _ctx.accounts.lock_account.load_mut()?;
-    let mut state = _ctx.accounts.state.load_mut()?;
     let mut user_account = _ctx.accounts.user_account.load_mut()?;
+    let state1 = _ctx.accounts.state.load()?;
 
-    lock_account.calculate_lock_duration(&_ctx.accounts.clock);
+    lock_account.calculate_lock_duration(&_ctx.accounts.clock, &state1);
+    drop(state1);
+
+    let mut state = _ctx.accounts.state.load_mut()?;
 
     if lock_account.locked_duration < state.honey_drop_cycle {
       return Err(AppErrorCode::InsufficientCycleTime.into());
@@ -560,21 +796,61 @@ use super::*;
         *h += d;
       });
 
+    emit!(NftHarvested {
+      pubkey: _ctx.accounts.lock_account.key(),
+      authority: _ctx.accounts.authority.key(),
+      parent: lock_account.parent_mint,
+      mint: lock_account.mint,
+      edition: lock_account.edition,
+      drops: drops,
+    });
+
     Ok(())
   }
 
   pub fn cleanup(_ctx: Context<Cleanup>) -> Result<()> {
     Ok(())
   }
+
+  pub fn cleanup2(_ctx: Context<Cleanup2>) -> Result<()> {
+    Ok(())
+  }
 }
 
-pub fn mint_nft(_ctx: Context<MintNft>) -> Result<()> {
+fn create_referral_account(_ctx: Context<InitReferral>, _code: String, max: u64) -> Result<()> {
+  let mut user_account = _ctx.accounts.user_account.load_mut()?;
+
+  require_eq!(_code.len(), 5, AppErrorCode::InvalidReferralCode);
+  require!(_code.chars().all(|c| c.is_numeric() || c.is_ascii_uppercase()), AppErrorCode::InvalidReferralCode);
+
+  let mut referral_account = _ctx.accounts.referral_account.load_init()?;
+
+  referral_account.code = str_to_code(&_code);
+  referral_account.owner = _ctx.accounts.authority.key();
+  if max < INFINITE_INVITES {
+    referral_account.max = 1;
+    user_account.num_referral_created += 1;
+  } else {
+    referral_account.max = INFINITE_INVITES - user_account.num_referral_created;
+    user_account.num_referral_created = INFINITE_INVITES;
+  }
+
+  emit!(ReferralCreated {
+    owner: _ctx.accounts.authority.key(),
+    code: _code,
+  });
+
+  Ok(())
+}
+
+fn mint_nft(_ctx: Context<MintNft>) -> Result<()> {
   let mvb_edition = &mut _ctx.accounts.mvb_edition.load_init()?;
   let mut state = _ctx.accounts.state.load_mut()?;
   let mut mvb_account = _ctx.accounts.mvb_account.load_mut()?;
+  let mut mvb_user_account = _ctx.accounts.mvb_user_account.load_mut()?;
 
-  if _ctx.accounts.clock.unix_timestamp > state.mint_end_time {
-    return Err(AppErrorCode::MintEnded.into());
+  if state.mint_start_time > _ctx.accounts.clock.unix_timestamp || _ctx.accounts.clock.unix_timestamp > state.mint_end_time {
+    return Err(AppErrorCode::InvalidTime.into());
   }
 
   if mvb_account.num_minted >= mvb_account.total_supply || state.num_minted >= state.total_supply {
@@ -583,11 +859,14 @@ pub fn mint_nft(_ctx: Context<MintNft>) -> Result<()> {
 
   state.num_minted += 1;
   mvb_account.num_minted += 1;
+  mvb_user_account.num_minted += 1;
 
   let _edition = mvb_account.num_minted;
   mvb_edition.mint = _ctx.accounts.new_mint.key();
   mvb_edition.mvb = _ctx.accounts.mvb_account.key();
   mvb_edition.index = _edition;
+  mvb_edition.time = _ctx.accounts.clock.unix_timestamp;
+  mvb_edition.creator = _ctx.accounts.authority.key();
 
   drop(state);
 
@@ -633,6 +912,13 @@ pub fn mint_nft(_ctx: Context<MintNft>) -> Result<()> {
     ),
     _edition
   )?;
+
+  emit!(NftPrinted {
+    authority: _ctx.accounts.authority.key(),
+    parent: _ctx.accounts.mint.key(),
+    mint: _ctx.accounts.new_mint.key(),
+    edition: _edition,
+  });
 
   Ok(())
 }
@@ -732,6 +1018,43 @@ pub struct InitUser<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(code: String)]
+pub struct InitReferral<'info> {
+  #[account(seeds=[STATE.as_bytes()], bump)]
+  pub state: AccountLoader<'info, StateAccount>,
+  #[account(mut)]
+  pub authority: Signer<'info>,
+  #[account(init, payer = authority, seeds = [REFERRAL.as_bytes(), code.as_bytes()], bump, space = 8 + size_of::<ReferralAccount>())]
+  pub referral_account: AccountLoader<'info, ReferralAccount>,
+  #[account(mut, seeds = [authority.key().as_ref()], bump)]
+  pub user_account: AccountLoader<'info, UserAccount>,
+
+  pub system_program: Program<'info, System>,
+  pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct ApplyCycle0Referral<'info> {
+  #[account(mut)]
+  pub authority: Signer<'info>,
+  #[account(mut, seeds = [authority.key().as_ref()], bump)]
+  pub user_account: AccountLoader<'info, UserAccount>,
+  #[account(seeds=[STATE.as_bytes()], bump)]
+  pub state: AccountLoader<'info, StateAccount>,
+}
+
+#[derive(Accounts)]
+#[instruction(code: String)]
+pub struct ApplyReferral<'info> {
+  #[account(mut)]
+  pub authority: Signer<'info>,
+  #[account(mut, seeds = [authority.key().as_ref()], bump)]
+  pub user_account: AccountLoader<'info, UserAccount>,
+  #[account(mut, seeds = [REFERRAL.as_bytes(), code.as_bytes()], bump)]
+  pub referral_account: AccountLoader<'info, ReferralAccount>,
+}
+
+#[derive(Accounts)]
 #[instruction(symbol: String)]
 pub struct InitMvbUser<'info> {
   #[account(mut)]
@@ -762,7 +1085,7 @@ pub struct MintNft<'info> {
   #[account(mut, seeds = [MVB.as_ref(), symbol.as_bytes()],bump)]
   pub mvb_account: AccountLoader<'info, MvbAccount>,
   #[account(mut, seeds = [MVB.as_bytes(), symbol.as_bytes(), authority.key().as_ref()], bump)]
-  pub mvb_user_account: Option<AccountLoader<'info, MvbUserAccount>>,
+  pub mvb_user_account: AccountLoader<'info, MvbUserAccount>,
   #[account(mut, seeds = [authority.key().as_ref()], bump)]
   pub user_account: Option<AccountLoader<'info, UserAccount>>,
 
@@ -855,6 +1178,19 @@ pub struct Cleanup<'info> {
 }
 
 #[derive(Accounts)]
+pub struct Cleanup2<'info> {
+  #[account(mut)]
+  pub service: Signer<'info>,
+  #[account(mut, seeds=[STATE.as_bytes()], bump, has_one = service)]
+  pub state: AccountLoader<'info, StateAccount>,
+  #[account(mut, close = close_authority)]
+  pub user_account: AccountLoader<'info, UserAccount>,
+  /// CHECK: close authority
+  #[account(mut)]
+  pub close_authority: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
 pub struct CreateCollection<'info> {
   #[account(mut)]
   pub authority: Signer<'info>,
@@ -893,6 +1229,62 @@ pub struct CreateCollection<'info> {
 
 #[derive(Accounts)]
 pub struct StakeLp<'info> {
+  #[account(mut)]
+  pub authority: Signer<'info>,
+  #[account(mut, 
+        seeds=[STATE.as_bytes()], 
+        bump,
+        has_one = lp_mint,
+        has_one = lp_vault,
+        has_one = usd_mint,
+        has_one = wag_mint,
+        has_one = lp_usd_vault,
+        has_one = lp_wag_vault,
+    )]
+  pub state: AccountLoader<'info, StateAccount>,
+  #[account(init, payer = authority, space = 8 + size_of::<UserStakedAccount>())]
+  pub user_staked_account: AccountLoader<'info, UserStakedAccount>,
+  #[account(mut, seeds = [authority.key().as_ref()], bump)]
+  pub user_account: AccountLoader<'info, UserAccount>,
+  #[account(
+        mut, 
+        associated_token::mint = lp_mint,
+        associated_token::authority = authority,
+    )]
+  pub user_lp_vault: Account<'info, TokenAccount>,
+
+  // #[account(mut)]
+  // pub referral_parent_1: Option<AccountLoader<'info, ReferralAccount>>,
+  #[account(mut)]
+  pub user_account_parent_1: Option<AccountLoader<'info, UserAccount>>,
+
+  // #[account(mut)]
+  // pub referral_parent_2: Option<AccountLoader<'info, ReferralAccount>>,
+  #[account(mut)]
+  pub user_account_parent_2: Option<AccountLoader<'info, UserAccount>>,
+
+  pub lp_mint: Account<'info, Mint>,
+  #[account(mut)]
+  pub lp_vault: Account<'info, TokenAccount>,
+  #[account(mut)]
+  pub usd_mint: Account<'info, Mint>,
+  #[account(mut)]
+  pub wag_mint: Account<'info, Mint>,
+
+  #[account()]
+  pub lp_usd_vault: Account<'info, TokenAccount>,
+  #[account()]
+  pub lp_wag_vault: Account<'info, TokenAccount>,
+
+  pub clock: Sysvar<'info, Clock>,
+  pub token_program: Program<'info, Token>,
+  pub associated_token_program: Program<'info, AssociatedToken>,
+  pub system_program: Program<'info, System>,
+  pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct UnstakeLp<'info> {
   #[account(mut)]
   pub authority: Signer<'info>,
   #[account(mut, 
@@ -1016,7 +1408,7 @@ pub struct Harvest<'info> {
 
 fn check_metadata_collection(reward: &MetadataAccount, collection_mint: Pubkey) -> bool {
   match &reward.collection {
-    Some(collection) => collection.key == collection_mint,
+    Some(collection) => collection.key == collection_mint && collection.verified,
     None => false,
   }
 }
@@ -1038,11 +1430,24 @@ pub struct StateAccount {
   pub num_minted: u64,
   pub user_max_mint: u64,
   pub lock_duration: i64,
+
+  pub stake_lp_end_time: i64,
+  pub mint_start_time: i64,
   pub mint_end_time: i64,
+  pub harvest_drop_start_time: i64,
   pub harvest_drop_end_time: i64,
+
   pub honey_drop_cycle: i64,
   pub honey_drop_remains: [u64; 4],
-  pub honey_drop_values: [u64; 4],
+
+  /// The 256-bit merkle root.
+  pub referral_root: [u8; 32],
+
+  pub referral_level_values: [u64; 4],
+  pub referral_level_max_invites: [u64; 4],
+
+  pub referral_parent_1_percent: u64,
+  pub referral_parent_2_percent: u64,
 }
 
 #[account(zero_copy)]
@@ -1067,11 +1472,29 @@ pub struct MvbUserAccount {
 #[account(zero_copy)]
 pub struct UserAccount {
   pub authority: Pubkey,
+  pub referrer: Pubkey, // UserAccount who invited this user
+  pub referral: Pubkey, // Referral account
+  pub invited: u64, // cycle0 users or referred users => 1
+  pub num_referral_created: u64,
   pub num_minted: u64,
+  pub used_lp_staked_value: u64,
   pub lp_staked_amount: u64,
   pub lp_staked_value: u64,
   pub lp_staked_time: i64,
   pub honey_drops: [u64; 4],
+  pub team_staked_bonus_amount: u64,
+  pub team_staked_bonus_value: u64,
+  pub team_staked_amount: u64,
+  pub team_staked_value: u64,
+}
+
+#[account(zero_copy)]
+pub struct ReferralAccount {
+  pub owner: Pubkey,
+  pub max: u64,
+  pub used: u64,
+  pub code: [u8; 5],
+  pub _padding: [u8; 3],
 }
 
 #[account(zero_copy)]
@@ -1081,7 +1504,10 @@ pub struct MvbEditionAccount {
   pub mvb: Pubkey,
   pub index: u64,
   pub added_to_collection: u64,
-  pub data: [Pubkey; 15],
+  pub time: i64,
+  pub times: [i64; 3],
+  pub creator: Pubkey,
+  pub data: [Pubkey; 13],
 }
 
 #[account(zero_copy)]
@@ -1097,13 +1523,26 @@ pub struct NftLockAccount {
   pub locking: u64,
 }
 
+#[account(zero_copy)]
+pub struct UserStakedAccount {
+  pub authority: Pubkey,
+  pub amount: u64,
+  pub value: u64,
+  pub time: i64,
+  pub data: [Pubkey; 4],
+}
+
 impl NftLockAccount {
-  fn calculate_lock_duration(&mut self, clock: &Clock) {
+  fn calculate_lock_duration(&mut self, clock: &Clock, state: &StateAccount) {
     if self.locking == 0 {
       return;
     }
-    self.locked_duration += clock.unix_timestamp.checked_sub(self.last_calculated_at).unwrap();
-    self.last_calculated_at = clock.unix_timestamp;
+    let mut time = clock.unix_timestamp;
+    if time > state.harvest_drop_end_time {
+      time = state.harvest_drop_end_time;
+    }
+    self.locked_duration += time.checked_sub(self.last_calculated_at).unwrap();
+    self.last_calculated_at = time;
   }
 }
 
@@ -1144,8 +1583,20 @@ impl StateAccount {
 
 #[error_code]
 pub enum AppErrorCode {
+  #[msg("User Invited")]
+  UserInvited,
+  #[msg("User Not Invited")]
+  UserNotInvited,
+  #[msg("Referral Code Used")]
+  ReferralCodeUsed,
+  #[msg("Insufficient Referral")]
+  InsufficientReferral,
+  #[msg("Invalid Referral Code")]
+  InvalidReferralCode,
   #[msg("Exceeded total supply")]
   ExceededTotalSupply,
+  #[msg("Invalid Referral")]
+  InvalidReferral,
   #[msg("Exceeded user max mint")]
   ExceededUserMaxMint,
   #[msg("Exceeded user airdrop")]
@@ -1162,10 +1613,10 @@ pub enum AppErrorCode {
   UnderLock,
   #[msg("Invalid edition")]
   InvalidEdition,
-  #[msg("Mint ended")]
-  MintEnded,
-  #[msg("Harvest ended")]
-  HarvestEnded,
+  #[msg("Invalid Time")]
+  InvalidTime,
+  #[msg("Invalid Authority")]
+  InvalidAuthority
 }
 
 pub fn find_edition_account(mint: &Pubkey, edition_number: u64) -> (Pubkey, u8) {
@@ -1193,4 +1644,92 @@ pub fn find_metadata_account(mint: &Pubkey) -> (Pubkey, u8) {
     &[MPL_PREFIX.as_bytes(), MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
     &MPL_TOKEN_METADATA_ID
   )
+}
+
+pub fn str_to_code(root_code: &str) -> [u8; 5] {
+  let src = root_code.as_bytes();
+  let mut data = [0u8; 5];
+  data[..src.len()].copy_from_slice(src);
+  data
+}
+
+#[event]
+pub struct UserInited {
+    pubkey: Pubkey,
+    authority: Pubkey,
+}
+
+#[event]
+pub struct MvbUserInited {
+    pubkey: Pubkey,
+    authority: Pubkey,
+    mvb: Pubkey,
+}
+
+#[event]
+pub struct NftPrinted {
+    authority: Pubkey,
+    parent: Pubkey,
+    mint: Pubkey,
+    edition: u64,
+}
+
+#[event]
+pub struct Staked {
+    authority: Pubkey,
+    amount: u64,
+    value: u64,
+    parent_1: Pubkey,
+    amount_1: u64,
+    value_1: u64,
+    parent_2: Pubkey,
+    amount_2: u64,
+    value_2: u64,
+}
+
+#[event]
+pub struct Unstaked {
+    authority: Pubkey,
+    amount: u64,
+}
+
+#[event]
+pub struct NftLocked {
+    pubkey: Pubkey,
+    authority: Pubkey,
+    parent: Pubkey,
+    mint: Pubkey,
+    edition: u64,
+}
+
+#[event]
+pub struct NftUnlocked {
+    pubkey: Pubkey,
+    authority: Pubkey,
+    parent: Pubkey,
+    mint: Pubkey,
+    edition: u64,
+}
+
+#[event]
+pub struct NftHarvested {
+    pubkey: Pubkey,
+    authority: Pubkey,
+    parent: Pubkey,
+    mint: Pubkey,
+    edition: u64,
+    drops: [u64; 4],
+}
+
+#[event]
+pub struct ReferralCreated {
+    owner: Pubkey,
+    code: String
+}
+
+#[event]
+pub struct ReferralApplied {
+  referrer: Pubkey,
+  referee: Pubkey,
+  code: String
 }

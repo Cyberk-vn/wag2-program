@@ -2,6 +2,7 @@
 .anchor
 .DS_Store
 target
+target_old
 **/*.rs.bk
 node_modules
 test-ledger

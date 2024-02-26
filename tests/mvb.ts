@@ -20,18 +20,25 @@ import {
   createAccount,
 } from '@solana/spl-token'
 import { WaggleMvb } from '../target/types/waggle_mvb'
-import { utf8 } from '@coral-xyz/anchor/dist/cjs/utils/bytes'
-import { expect } from 'chai'
+import { bs58, utf8 } from '@coral-xyz/anchor/dist/cjs/utils/bytes'
+import { expect, use } from 'chai'
 import { dasApi } from '@metaplex-foundation/digital-asset-standard-api'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import chaiAsPromised from 'chai-as-promised'
 import chai from 'chai'
 import { chain, last } from 'lodash'
 import { createToken, delay, mintToken, mintTokenToAccount, toBN, transferTo } from './utils'
-import { BalanceTree, toBytes32Array, hexToNumberArray } from '../src/merkle'
+import { BalanceTree, toBytes32Array, hexToNumberArray, MerkleTree } from '../src/merkle'
 import { DateTime } from 'luxon'
+import { PublicKey } from '@metaplex-foundation/js'
 
 chai.use(chaiAsPromised)
+
+const DEFAULT_PUBLIC_KEY = '11111111111111111111111111111111'
+
+export type MvbType = Program<WaggleMvb>
+export type UserAccount = Awaited<ReturnType<MvbType['account']['userAccount']['fetch']>>
+export type ReferralAccount = Awaited<ReturnType<MvbType['account']['referralAccount']['fetch']>>
 
 const _provider = anchor.AnchorProvider.env()
 let connection = _provider.connection
@@ -44,6 +51,9 @@ const provider = new anchor.AnchorProvider(confirmedConnection, _provider.wallet
 anchor.setProvider(provider)
 const mvb: Program<WaggleMvb> = anchor.workspace.WaggleMvb as Program<WaggleMvb>
 const modifyComputeUnits = web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 1000000 })
+
+const ROOT_CODE = 'MVBEE'
+const REFERRAL = 'referral'
 
 let airdropTree: BalanceTree
 
@@ -59,13 +69,33 @@ const users = Array.from({ length: 10 }, (_, index) => {
   const wallet = new anchor.Wallet(user)
   const payer = (wallet as any).payer
   const provider = new anchor.AnchorProvider(connection, wallet, {})
-  const [mvbUserAccount] = anchor.web3.PublicKey.findProgramAddressSync([user.publicKey.toBuffer()], mvb.programId)
-  return { user, payer, wallet, provider, publicKey: user.publicKey, mvbUserAccount, airdropAmount: new BN(index + 1) }
+  const [userAccount] = anchor.web3.PublicKey.findProgramAddressSync([user.publicKey.toBuffer()], mvb.programId)
+  const [droneMvbUserAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+    [utf8.encode('mvb'), utf8.encode('MVBD'), wallet.publicKey.toBuffer()],
+    mvb.programId,
+  )
+  const [queenMvbUserAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+    [utf8.encode('mvb'), utf8.encode('MVBQ'), wallet.publicKey.toBuffer()],
+    mvb.programId,
+  )
+  return {
+    user,
+    payer,
+    wallet,
+    provider,
+    publicKey: user.publicKey,
+    userAccount,
+    airdropAmount: new BN(index + 1),
+    droneMvbUserAccount,
+    queenMvbUserAccount,
+  }
 })
 
 const user1 = users[0]
 const user2 = users[1]
 const user3 = users[2]
+
+const referralTree = new MerkleTree([user1].map((u) => u.publicKey.toBuffer()))
 
 let lpMint: anchor.web3.PublicKey
 let usdMint: anchor.web3.PublicKey
@@ -93,7 +123,10 @@ let statePubkey: anchor.web3.PublicKey
 const honeyDrops = [new BN(2), new BN(4), new BN(6), new BN(8)] // 100
 const LOCK_DURATION = new BN(2)
 const DROP_CYCLE = new BN(2)
+const STAKE_END = new BN(DateTime.now().plus({ seconds: 100 }).toUnixInteger())
+const MINT_START = new BN(DateTime.now().plus({ seconds: 0 }).toUnixInteger())
 const MINT_END = new BN(DateTime.now().plus({ seconds: 100 }).toUnixInteger())
+const HARVEST_START = new BN(DateTime.now().plus({ seconds: 0 }).toUnixInteger())
 const HARVEST_END = new BN(DateTime.now().plus({ seconds: 100 }).toUnixInteger())
 
 interface IMvb {
@@ -114,8 +147,13 @@ let queen: IMvb
 let drone: IMvb
 let collection: IMvb
 
-const TOTAL_SUPPLY = new BN(10)
-const MAX_PER_USER = new BN(3)
+const TOTAL_SUPPLY = new BN(14)
+const MAX_PER_USER = new BN(6)
+
+const INFINITE_INVITES = new BN(1000000)
+
+const REFERRAL_LEVEL_VALUES = [toBN(0), toBN(3000, 9), toBN(5000, 9), toBN(5000, 9)]
+const REFERRAL_LEVEL_MAX_INVITES = [new BN(1), new BN(3), INFINITE_INVITES, INFINITE_INVITES]
 
 describe('solana-nft-anchor', async () => {
   before(async () => {
@@ -130,7 +168,7 @@ describe('solana-nft-anchor', async () => {
       name: 'Queen',
       symbol: 'MVBQ',
       uri: 'https://mvb-nft-dev.waggle.network/queen-bee.json',
-      totalSupply: new BN(1),
+      totalSupply: new BN(5),
       lpValuePrice: toBN(1000, 9),
       honeyDropPerCycle: new BN(20),
     })
@@ -158,6 +196,7 @@ describe('solana-nft-anchor', async () => {
     }
   })
   it('Fund', async () => {
+    mvb.account.mvbAccount.all()
     await Promise.all(
       [...users, lpAuthority, serviceAuth].map(async ({ wallet }) => {
         const lastBlockhash = await connection.getLatestBlockhash()
@@ -194,7 +233,22 @@ describe('solana-nft-anchor', async () => {
 
   it('Create State', async () => {
     await mvb.methods
-      .createState(TOTAL_SUPPLY, MAX_PER_USER, LOCK_DURATION, DROP_CYCLE, MINT_END, HARVEST_END, honeyDrops)
+      .createState(
+        REFERRAL_LEVEL_VALUES,
+        REFERRAL_LEVEL_MAX_INVITES,
+        TOTAL_SUPPLY,
+        MAX_PER_USER,
+        LOCK_DURATION,
+        DROP_CYCLE,
+        STAKE_END,
+        MINT_START,
+        MINT_END,
+        HARVEST_START,
+        HARVEST_END,
+        honeyDrops,
+        new BN(20),
+        new BN(10),
+      )
       .accounts({
         state: statePubkey,
         service: serviceAuth.publicKey,
@@ -208,8 +262,43 @@ describe('solana-nft-anchor', async () => {
         lpWagVault,
       })
       .rpc()
+    // const state = await mvb.account.stateAccount.fetch(statePubkey)
+    // const rootUser = await mvb.account.userAccount.fetch(rootUserAccount)
+    // const rootRefer = await mvb.account.referralAccount.fetch(rootReferralAccount)
   })
-  it('Stake LP', async () => {
+  it('Set Referral Root', async () => {
+    await mvb.methods.setReferralRoot(toBytes32Array(referralTree.getRoot())).accounts({ state: statePubkey }).rpc()
+  })
+  it('User1 can not stake LP (not invited)', async () => {
+    await expect(stakeLp(user1, toBN(100, 9))).rejectedWith(RegExp(mvbErrors['UserNotInvited']))
+  })
+  it('User1 apply Referral 0', async () => {
+    await applyCycle0Referral(user1)
+    await expect(applyCycle0Referral(user1)).rejectedWith(RegExp(mvbErrors['UserInvited']))
+  })
+  it('Create Referral', async () => {
+    await expect(createReferralCode(user1, 'CODE')).rejectedWith(RegExp(mvbErrors['InvalidReferralCode']))
+    await expect(createReferralCode(user1, 'CoDE1')).rejectedWith(RegExp(mvbErrors['InvalidReferralCode']))
+    await expect(createReferralCode(user1, 'CODE&')).rejectedWith(RegExp(mvbErrors['InvalidReferralCode']))
+    await expect(createReferralCode(user1, 'CODEE1')).rejectedWith(RegExp(mvbErrors['InvalidReferralCode']))
+    await createReferralCode(user1, 'CODE1')
+    await expect(createReferralCode(user1, 'CODE1')).rejectedWith(RegExp(/0x0/))
+    await expect(createReferralCode(user1, 'CODE2')).rejectedWith(RegExp(mvbErrors['InsufficientReferral']))
+  })
+  it('Can not apply non-exist code', async () => {
+    await expect(applyReferral(user2, 'NONEX')).rejectedWith(/0xbbf/) // non-exist
+  })
+  it('User2 apply referral CODE1', async () => {
+    await applyReferral(user2, 'CODE1')
+  })
+  it('User3 can not apply referral CODE1 (already applied)', async () => {
+    await expect(applyReferral(user3, 'CODE1')).rejectedWith(RegExp(mvbErrors['ReferralCodeUsed']))
+  })
+  it('User3 apply User2 code', async () => {
+    await createReferralCode(user2, 'CODE2')
+    await applyReferral(user3, 'CODE2')
+  })
+  it('User1 Stake LP', async () => {
     const user = user1
     const amount = toBN(100, 9)
 
@@ -222,17 +311,59 @@ describe('solana-nft-anchor', async () => {
     stateLpAcc = await getAccount(connection, stateLpVault)
     expect(stateLpAcc.amount).to.equal(BigInt(toBN(200, 9).toString()))
 
-    const user1Account = await mvb.account.userAccount.fetch(user.mvbUserAccount)
+    const user1Account = await mvb.account.userAccount.fetch(user.userAccount)
     expect(user1Account.lpStakedAmount.eq(toBN(200, 9))).to.true
     expect(user1Account.lpStakedValue.eq(toBN(4000, 9))).to.true
   })
-  it('Try unstake before lock duration', async () => {
-    await expect(unstake(user1)).rejectedWith(RegExp(mvbErrors['UnderLock']))
+  it('User2 stake LP', async () => {
+    await stakeLp(user2, toBN(100, 9))
+    const user1Account = await mvb.account.userAccount.fetch(user1.userAccount)
+    expect(user1Account.teamStakedBonusAmount.toString()).eq(toBN(20, 9).toString())
+    expect(user1Account.teamStakedBonusValue.toString()).eq(toBN(20 * 20, 9).toString())
   })
-  it('Try unstake after lock duration', async () => {
+  it('User3 stake LP', async () => {
+    await stakeLp(user3, toBN(100, 9))
+    const user2Account = await mvb.account.userAccount.fetch(user2.userAccount)
+    expect(user2Account.teamStakedAmount.toString()).eq(toBN(100, 9).toString())
+    expect(user2Account.teamStakedBonusAmount.toString()).eq(toBN(20, 9).toString())
+
+    const user1Account = await mvb.account.userAccount.fetch(user1.userAccount)
+    expect(user1Account.teamStakedBonusAmount.toString()).eq(toBN(30, 9).toString())
+  })
+  it('Check create more referral code', async () => {
+    // user2 value = 3200 => user can create 2 more referral code
+    await createReferralCode(user2, 'CODE3')
+    await createReferralCode(user2, 'CODE4')
+    await expect(createReferralCode(user2, 'CODE5')).rejectedWith(RegExp(mvbErrors['InsufficientReferral']))
+  })
+  it('INFINIT referral', async () => {
+    await stakeLp(user2, toBN(100, 9)) // 6000 => create max
+    let user1Account = await mvb.account.userAccount.fetch(user1.userAccount)
+    expect(user1Account.lpStakedValue.add(user1Account.teamStakedValue).toNumber()).greaterThanOrEqual(
+      last(REFERRAL_LEVEL_VALUES).toNumber(),
+    )
+
+    const code = 'VIP01'
+    await createReferralCode(user1, code)
+    user1Account = await mvb.account.userAccount.fetch(user1.userAccount)
+    expect(user1Account.numReferralCreated.toNumber()).eq(INFINITE_INVITES.toNumber())
+
+    const [vipRef] = anchor.web3.PublicKey.findProgramAddressSync(
+      [utf8.encode('referral'), utf8.encode(code)],
+      mvb.programId,
+    )
+    const referralAccount = await mvb.account.referralAccount.fetch(vipRef)
+
+    await applyReferral(users[3], code)
+    await applyReferral(users[4], code)
+    await applyReferral(users[5], code)
+  })
+  it('Try unstake before lock duration', async () => {
+    await stakeLp(user1, toBN(50, 9))
+    await expect(unstake(user1)).rejectedWith(RegExp(mvbErrors['UnderLock']))
     await delay(3000)
     await unstake(user1)
-    const userAccount = await mvb.account.userAccount.fetch(user1.mvbUserAccount)
+    const userAccount = await mvb.account.userAccount.fetch(user1.userAccount)
     expect(userAccount.lpStakedAmount.eq(toBN(0, 9))).to.true
   })
   it('Create Collection', async () => {
@@ -267,11 +398,13 @@ describe('solana-nft-anchor', async () => {
       .rpc()
 
     const { newMint, edition, newMintMetadata, newMintEdition } = await mintCopyOfMasterByAirdrop(user1, drone)
+    expect((await mvb.account.mvbUserAccount.fetch(user1.droneMvbUserAccount)).numMinted.toNumber()).eq(1)
     await expect(mintCopyOfMasterByAirdrop(user1, drone)).rejectedWith(RegExp(mvbErrors['ExceededUserAirdrop']))
     await transferTo(user1.provider, newMint, user2.publicKey, '1')
 
     const user = user2
     await mintCopyOfMasterByAirdrop(user2, drone)
+    expect((await mvb.account.mvbUserAccount.fetch(user2.droneMvbUserAccount)).numMinted.toNumber()).eq(1)
     await lockNft(user, drone, newMint)
 
     await delay(4000)
@@ -282,34 +415,34 @@ describe('solana-nft-anchor', async () => {
     const { lockAccount } = await lockNft(user, drone, newMint)
 
     // await transferTo(user2.provider, newMint, user1.publicKey, '1')
-    console.log(
-      'remains=',
-      (await mvb.account.stateAccount.fetch(statePubkey)).honeyDropRemains.map((x) => x.toString()).join(','),
-    )
+    // console.log(
+    //   'remains=',
+    //   (await mvb.account.stateAccount.fetch(statePubkey)).honeyDropRemains.map((x) => x.toString()).join(','),
+    // )
     // console.log(
     //   'userDrops=',
     //   (await mvb.account.userAccount.fetch(user.mvbUserAccount)).honeyDrops.map((x) => x.toString()).join(','),
     // )
     await harvest(user, drone, newMint)
-    console.log(
-      'remains=',
-      (await mvb.account.stateAccount.fetch(statePubkey)).honeyDropRemains.map((x) => x.toString()).join(','),
-    )
-    console.log(
-      'userDrops=',
-      (await mvb.account.userAccount.fetch(user.mvbUserAccount)).honeyDrops.map((x) => x.toString()).join(','),
-    )
+    // console.log(
+    //   'remains=',
+    //   (await mvb.account.stateAccount.fetch(statePubkey)).honeyDropRemains.map((x) => x.toString()).join(','),
+    // )
+    // console.log(
+    //   'userDrops=',
+    //   (await mvb.account.userAccount.fetch(user.userAccount)).honeyDrops.map((x) => x.toString()).join(','),
+    // )
     await harvest(user, drone, newMint)
     // await harvest(user, drone, newMint)
     // console.log('userDuration=', (await mvb.account.nftLockAccount.fetch(lockAccount)).lockedDuration.toString())
-    console.log(
-      'remains=',
-      (await mvb.account.stateAccount.fetch(statePubkey)).honeyDropRemains.map((x) => x.toString()).join(','),
-    )
-    console.log(
-      'userDrops=',
-      (await mvb.account.userAccount.fetch(user.mvbUserAccount)).honeyDrops.map((x) => x.toString()).join(','),
-    )
+    // console.log(
+    //   'remains=',
+    //   (await mvb.account.stateAccount.fetch(statePubkey)).honeyDropRemains.map((x) => x.toString()).join(','),
+    // )
+    // console.log(
+    //   'userDrops=',
+    //   (await mvb.account.userAccount.fetch(user.userAccount)).honeyDrops.map((x) => x.toString()).join(','),
+    // )
 
     const closeAuth = web3.Keypair.generate()
     const [mvbEdition] = anchor.web3.PublicKey.findProgramAddressSync([newMint.toBuffer()], mvb.programId)
@@ -339,28 +472,84 @@ describe('solana-nft-anchor', async () => {
       .rpc()
 
     const { newMint: newQueenCopy } = await mintCopyOfMasterByAirdrop(user1, queen)
+    expect((await mvb.account.mvbUserAccount.fetch(user1.queenMvbUserAccount)).numMinted.toNumber()).eq(1)
     const x = await fetchDigitalAsset(umi, publicKey(newQueenCopy))
-    console.log(x)
+    // console.log(x)
   })
-  return
+  it('Mint by staked LP', async () => {
+    const user2Account = await mvb.account.userAccount.fetch(user2.userAccount)
+    expect(user2Account.lpStakedValue.toString()).eq(toBN(4000, 9).toString())
+    expect(user2Account.teamStakedBonusValue.toString()).eq(toBN(400, 9).toString())
+
+    // 4400 => 3 queens & 2 drone
+    await mintCopyOfMasterByStakedLp(user2, queen)
+    await mintCopyOfMasterByStakedLp(user2, queen)
+    await mintCopyOfMasterByStakedLp(user2, queen)
+    await mintCopyOfMasterByStakedLp(user2, drone)
+    await mintCopyOfMasterByStakedLp(user2, drone)
+    expect((await mvb.account.mvbUserAccount.fetch(user2.droneMvbUserAccount)).numMinted.toNumber()).eq(3)
+    await expect(mintCopyOfMasterByStakedLp(user2, queen)).rejectedWith(RegExp(mvbErrors['Insufficient']))
+  })
 })
+
+async function applyReferral(user: IUser, code: string) {
+  const [referralAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+    [utf8.encode(REFERRAL), utf8.encode(code)],
+    mvb.programId,
+  )
+  const txs = new web3.Transaction()
+  await injectInitUser(txs, user)
+  txs.add(
+    await mvb.methods
+      .applyReferral(code)
+      .accounts({
+        authority: user.publicKey,
+        userAccount: user.userAccount,
+        referralAccount,
+      })
+      .transaction(),
+  )
+  await user.provider.sendAndConfirm(txs, [])
+}
+
+async function createReferralCode(user: IUser, code: string) {
+  const [referralAccount] = anchor.web3.PublicKey.findProgramAddressSync(
+    [utf8.encode(REFERRAL), utf8.encode(code)],
+    mvb.programId,
+  )
+  const tx = await mvb.methods
+    .createReferral(code)
+    .accounts({
+      state: statePubkey,
+      referralAccount,
+      authority: user.publicKey,
+      userAccount: user.userAccount,
+      ...DEFAULT_ACCOUNTS,
+    })
+    .transaction()
+  await user.provider.sendAndConfirm(tx, [])
+}
+
+async function applyCycle0Referral(user: IUser) {
+  const txs = new web3.Transaction()
+  await injectInitUser(txs, user)
+  const setInvited = await mvb.methods
+    .applyCycle0Referral(
+      referralTree.getProof(user.publicKey.toBuffer()).map((p) => hexToNumberArray(p.toString('hex'))),
+    )
+    .accounts({
+      state: statePubkey,
+      authority: user.publicKey,
+      userAccount: user.userAccount,
+    })
+    .transaction()
+  txs.add(setInvited)
+  await user1.provider.sendAndConfirm(txs, [])
+}
 
 async function harvest(user: IUser, parent: IMvb, mint: anchor.web3.PublicKey) {
   const txs = new web3.Transaction()
-  try {
-    await mvb.account.userAccount.fetch(user.mvbUserAccount)
-  } catch {
-    txs.add(
-      await mvb.methods
-        .initUser()
-        .accounts({
-          authority: user.wallet.publicKey,
-          userAccount: user.mvbUserAccount,
-          ...DEFAULT_ACCOUNTS,
-        })
-        .transaction(),
-    )
-  }
+  await injectInitUser(txs, user)
   const lockAccount = web3.PublicKey.findProgramAddressSync(
     [utf8.encode('lock'), user.publicKey.toBuffer(), mint.toBuffer()],
     mvb.programId,
@@ -371,7 +560,7 @@ async function harvest(user: IUser, parent: IMvb, mint: anchor.web3.PublicKey) {
       authority: user.publicKey,
       state: statePubkey,
       mvbAccount: parent.mintAccount,
-      userAccount: user.mvbUserAccount,
+      userAccount: user.userAccount,
       lockAccount,
       mint,
       slothashes: web3.SYSVAR_SLOT_HASHES_PUBKEY,
@@ -380,6 +569,23 @@ async function harvest(user: IUser, parent: IMvb, mint: anchor.web3.PublicKey) {
     .transaction()
   txs.add(harvestTx)
   await user.provider.sendAndConfirm(txs, [])
+}
+
+async function injectInitUser(txs: anchor.web3.Transaction, user: IUser) {
+  try {
+    await mvb.account.userAccount.fetch(user.userAccount)
+  } catch {
+    txs.add(
+      await mvb.methods
+        .initUser()
+        .accounts({
+          authority: user.wallet.publicKey,
+          userAccount: user.userAccount,
+          ...DEFAULT_ACCOUNTS,
+        })
+        .transaction(),
+    )
+  }
 }
 
 async function unlockNft(user: IUser, parent: IMvb, mint: anchor.web3.PublicKey) {
@@ -443,7 +649,7 @@ async function unstake(user: IUser) {
     .accounts({
       authority: user.wallet.publicKey,
       state: statePubkey,
-      userAccount: user.mvbUserAccount,
+      userAccount: user.userAccount,
       userLpVault: await getAssociatedTokenAddress(lpMint, user.wallet.publicKey, true),
       lpMint,
       lpVault: await getAssociatedTokenAddress(lpMint, statePubkey, true),
@@ -453,32 +659,48 @@ async function unstake(user: IUser) {
       wagMint,
       ...DEFAULT_ACCOUNTS,
     })
+    .signers([])
     .transaction()
   await user.provider.sendAndConfirm(tx, [])
 }
 
 async function stakeLp(user: IUser, amount: anchor.BN) {
-  const txs = new web3.Transaction()
-  try {
-    await mvb.account.userAccount.fetch(user.mvbUserAccount)
-  } catch {
-    txs.add(
-      await mvb.methods
-        .initUser()
-        .accounts({
-          authority: user.wallet.publicKey,
-          userAccount: user.mvbUserAccount,
-          ...DEFAULT_ACCOUNTS,
-        })
-        .transaction(),
-    )
+  let userAccount: UserAccount
+  userAccount = await mvb.account.userAccount.fetchNullable(user.userAccount)
+  if (!userAccount) {
+    const initUser = await mvb.methods
+      .initUser()
+      .accounts({
+        authority: user.wallet.publicKey,
+        userAccount: user.userAccount,
+        ...DEFAULT_ACCOUNTS,
+      })
+      .transaction()
+    await user.provider.sendAndConfirm(initUser, [])
+    userAccount = await mvb.account.userAccount.fetch(user.userAccount)
   }
+  // let referralParent1 = null
+  let userAccountParent1 = null
+  // let referralParent2 = null
+  let userAccountParent2 = null
+  if (userAccount.referrer.toString() !== DEFAULT_PUBLIC_KEY) {
+    // referralParent1 = userAccount.referral
+    ;[userAccountParent1] = web3.PublicKey.findProgramAddressSync([userAccount.referrer.toBuffer()], mvb.programId)
+    const parent1 = await mvb.account.userAccount.fetchNullable(userAccountParent1)
+    if (parent1 && parent1.referrer.toString() !== DEFAULT_PUBLIC_KEY) {
+      // referralParent2 = parent1.referral
+      ;[userAccountParent2] = web3.PublicKey.findProgramAddressSync([parent1.referrer.toBuffer()], mvb.programId)
+    }
+  }
+
+  const userStakedAccount = web3.Keypair.generate()
   const tx = await mvb.methods
     .stakeLp(amount)
     .accounts({
       authority: user.wallet.publicKey,
+      userStakedAccount: userStakedAccount.publicKey,
       state: statePubkey,
-      userAccount: user.mvbUserAccount,
+      userAccount: user.userAccount,
       userLpVault: await getAssociatedTokenAddress(lpMint, user.wallet.publicKey, true),
       lpMint,
       lpVault: await getAssociatedTokenAddress(lpMint, statePubkey, true),
@@ -487,11 +709,14 @@ async function stakeLp(user: IUser, amount: anchor.BN) {
       usdMint,
       wagMint,
 
+      userAccountParent1,
+      userAccountParent2,
+
       ...DEFAULT_ACCOUNTS,
     })
+    .signers([userStakedAccount])
     .transaction()
-  txs.add(tx)
-  await user.provider.sendAndConfirm(txs, [])
+  await user.provider.sendAndConfirm(tx, [userStakedAccount])
 }
 
 async function mintMasterNft(master: IMvb) {
@@ -540,7 +765,7 @@ interface IMintCopyOfMasterOption {
 async function mintCopyOfMaster(user: IUser, master: IMvb, option: IMintCopyOfMasterOption) {
   const txs = new web3.Transaction()
 
-  const mvbAccount = await mvb.account.stateAccount.fetch(statePubkey)
+  const mvbAccount = await mvb.account.mvbAccount.fetch(master.mintAccount)
   const edition = mvbAccount.numMinted.add(new BN(1))
 
   const newMint = anchor.web3.Keypair.generate()
@@ -562,7 +787,6 @@ async function mintCopyOfMaster(user: IUser, master: IMvb, option: IMintCopyOfMa
   const [userAccount] = anchor.web3.PublicKey.findProgramAddressSync([user.wallet.publicKey.toBuffer()], mvb.programId)
 
   let createdUser = false
-  let createdMvbUser = false
   try {
     if (option.type === 'stakedLp') {
       await mvb.account.userAccount.fetch(userAccount)
@@ -572,14 +796,8 @@ async function mintCopyOfMaster(user: IUser, master: IMvb, option: IMintCopyOfMa
     }
   } catch {}
 
-  try {
-    if (option.type === 'airdrop') {
-      await mvb.account.mvbUserAccount.fetch(mvbUserAccount)
-      createdMvbUser = true
-    } else {
-      createdMvbUser = true
-    }
-  } catch {}
+  const mua = await mvb.account.mvbUserAccount.fetchNullable(mvbUserAccount)
+  let createdMvbUser = !!mua
 
   const initUserTx = await mvb.methods
     .initUser()
@@ -619,7 +837,7 @@ async function mintCopyOfMaster(user: IUser, master: IMvb, option: IMintCopyOfMa
       mintMaster: master.masterEdition,
 
       userAccount: option.type === 'stakedLp' ? userAccount : null,
-      mvbUserAccount: option.type === 'airdrop' ? mvbUserAccount : null,
+      mvbUserAccount,
 
       newMint: newMint.publicKey,
       newMintVault,
@@ -677,7 +895,7 @@ async function createMvb({ name, symbol, uri, totalSupply, lpValuePrice, honeyDr
     mint,
     mintAccount,
     lpValuePrice,
-    mintVault: await getAssociatedTokenAddress(mint, statePubkey, true, TOKEN_PROGRAM_ID),
+    mintVault: await getAssociatedTokenAddress(mint, statePubkey, true),
     metadata: new anchor.web3.PublicKey(findMetadataPda(umi, { mint: publicKey(mint) })[0]),
     masterEdition: new anchor.web3.PublicKey(findMasterEditionPda(umi, { mint: publicKey(mint) })[0]),
   }

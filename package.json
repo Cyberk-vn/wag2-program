@@ -3,11 +3,13 @@
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "deploy:dev": "anchor deploy --program-name waggle_mvb --provider.cluster https://api.devnet.solana.com --provider.wallet ~/.config/solana/id.json",
-    "upgrade:dev": "anchor upgrade --program-id 6a2VeLtBtKAYu5ftup9o9uLEvfySdEzBhSDukHFZaopu './target/deploy/waggle_mvb.so' --provider.cluster https://api.devnet.solana.com --provider.wallet ~/.config/solana/id.json",
+    "upgrade:dev": "anchor upgrade --program-id DaeRkRvTZrFjQPKF6XdGok5XbhFBUSHukqQUvhygQ9pm './target/deploy/waggle_mvb.so' --provider.cluster https://api.devnet.solana.com --provider.wallet ~/.config/solana/id.json",
     "createState:dev": "env-cmd -e dev ts-node scripts/create-state.ts",
     "mintMaster:dev": "env-cmd -e dev ts-node scripts/create-master-nft.ts",
     "mintCollection:dev": "env-cmd -e dev ts-node scripts/create-collection.ts",
     "setAirdrop:dev": "env-cmd -e dev ts-node scripts/set-airdrop.ts",
+    "setCycle0:dev": "env-cmd -e dev ts-node scripts/set-cycle0.ts",
+    "setState:dev": "env-cmd -e dev ts-node scripts/set-state.ts",
     "end": "-"
   },
   "dependencies": {

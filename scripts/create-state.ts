@@ -5,13 +5,20 @@ import { web3 } from '@coral-xyz/anchor'
 async function main() {
   const tx = await program.methods
     .createState(
+      CONFIG.REFERRAL_LEVEL_VALUES,
+      CONFIG.REFERRAL_LEVEL_MAX_INVITES,
       CONFIG.TOTAL_SUPPLY,
       CONFIG.MAX_PER_USER,
       CONFIG.LP_LOCK_DURATION,
       CONFIG.DROP_CYCLE,
+      CONFIG.STAKE_END,
+      CONFIG.MINT_START,
       CONFIG.MINT_END,
+      CONFIG.HARVEST_START,
       CONFIG.HARVEST_END,
       CONFIG.HONEY_DROPS,
+      CONFIG.PARENT_1_PERCENT,
+      CONFIG.PARENT_2_PERCENT,
     )
     .accounts({
       state: FIXED_CONFIG.state,

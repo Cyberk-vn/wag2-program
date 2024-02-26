@@ -17,7 +17,7 @@ import {
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '@solana/spl-token'
 import { publicKey } from '@metaplex-foundation/umi'
 
-const MVB_ID = new web3.PublicKey('6a2VeLtBtKAYu5ftup9o9uLEvfySdEzBhSDukHFZaopu')
+const MVB_ID = new web3.PublicKey('DaeRkRvTZrFjQPKF6XdGok5XbhFBUSHukqQUvhygQ9pm')
 const modifyComputeUnits = web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 1000000 })
 
 const preflightCommitment = 'recent'
@@ -39,7 +39,7 @@ const umi = createUmi(provider.connection.rpcEndpoint)
 export const program = new Program<WaggleMvb>(IDL, MVB_ID)
 
 const DEV_CONFIG = {
-  USD_MINT: new web3.PublicKey('4WFDSbUJJBYbLkh5UCx6gj48vrPUavhRSYGBUCMWrNmt'), // 1_000_000
+  USD_MINT: new web3.PublicKey('4WFDSbUJJBYbLkh5UCx6gj48vrPUavhRSYGBUCMWrNmt'), // 10_000_000
   WAG_MINT: new web3.PublicKey('21sXd6E1shHL1meTE6drNQi8aAeJ95sQuLZzUXrzdn7o'), //   100_000
   LP_MINT: new web3.PublicKey('FkhzENMDtKeDQJt49HoYnhS2zvRF1yEcvfgWcRQuiijJ'), //   100_000
   LP_USD_VAULT: new web3.PublicKey('CMLb1sQqrGnn9dpw69f5XNNAe2jV1tHZHDfMF8GE3Sjv'),
@@ -47,18 +47,24 @@ const DEV_CONFIG = {
   SERVICE: new web3.PublicKey('BPdZihCt3apagWTbdt3JQJb3bmFVo8JKhY3T1N9ZV2YB'),
   TOTAL_SUPPLY: new BN(6000),
   MAX_PER_USER: new BN(5),
-  LP_LOCK_DURATION: new BN(60 * 5), // 2 minutes
+  LP_LOCK_DURATION: new BN(60 * 24), // 2 minutes
   DROP_CYCLE: new BN(60 * 60), // 1 hour
-  MINT_END: new BN(DateTime.fromISO('2024-02-01T09:08:34').toUnixInteger()),
-  HARVEST_END: new BN(DateTime.fromISO('2024-02-06T09:08:34').toUnixInteger()),
+  STAKE_END: new BN(DateTime.fromISO('2024-03-28T09:05:00Z').toUnixInteger()),
+  MINT_START: new BN(DateTime.fromISO('2024-03-02T00:30:00Z').toUnixInteger()),
+  MINT_END: new BN(DateTime.fromISO('2024-03-28T01:15:00Z').toUnixInteger()),
+  HARVEST_START: new BN(DateTime.fromISO('2024-03-02T08:30:00Z').toUnixInteger()),
+  HARVEST_END: new BN(DateTime.fromISO('2024-03-28T09:00:00Z').toUnixInteger()),
   HONEY_DROPS: [new BN(2_000), new BN(12_500), new BN(200_000), new BN(150_000)],
+  REFERRAL_LEVEL_VALUES: [toBN(0), toBN(2000, 6), toBN(5000, 6), toBN(5000, 6)],
+  REFERRAL_LEVEL_MAX_INVITES: [new BN(8), new BN(12), new BN(1_000_000), new BN(1_000_000)],
+  PARENT_1_PERCENT: new BN(20),
+  PARENT_2_PERCENT: new BN(10),
   COLLECTION: {
     name: 'WAGGLE MVB COLLECTION',
     symbol: 'WMC',
     uri: 'https://mvb-nft-dev.waggle.network/mvb-collection.json',
     totalSupply: new BN(6000),
     lpValuePrice: toBN('100', 6),
-    honeyDropPerCycle: new BN(2),
   },
   DRONE: {
     name: 'WAGGLE MVB DRONE BEE',
@@ -66,7 +72,7 @@ const DEV_CONFIG = {
     uri: 'https://mvb-nft-dev.waggle.network/drone-bee.json',
     totalSupply: new BN(5000),
     lpValuePrice: toBN('500', 6),
-    honeyDropPerCycle: new BN(4),
+    honeyDropPerCycle: new BN(24),
     airdrop: 'drone-airdrop.dev.csv',
   },
   QUEEN: {
@@ -75,7 +81,7 @@ const DEV_CONFIG = {
     uri: 'https://mvb-nft-dev.waggle.network/queen-bee.json',
     totalSupply: new BN(1000),
     lpValuePrice: toBN('1000', 6),
-    honeyDropPerCycle: new BN(8),
+    honeyDropPerCycle: new BN(48),
     airdrop: 'queen-airdrop.dev.csv',
   },
 }
